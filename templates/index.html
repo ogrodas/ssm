@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block head %}
+        <meta http-equiv="refresh" content="600">
+		<script type="text/javascript" charset="utf-8">
+           
+		    $(document).ready(function() {
+                $("#categories tbody").click(function(event) {
+                    $(categories.fnSettings().aoData).each(function (){
+                        $(this.nTr).removeClass('row_selected');
+                    });
+                    $(event.target.parentNode).addClass('row_selected');
+                });
+               
+                var i=0;
+                function fnOpenCloseDetails ( oSettings ) {
+                    i+=1;
+                    if (i%2) { return;} //If the table is empty the code under will crash somehow, this happends every 2'nd time. quick workaorund
+
+                    $('td img', signatures.fnGetNodes() ).each( function () {
+                        $(this).click( function () {
+                            var nTr = this.parentNode.parentNode;
+                            if ( this.src.match('details_close') ) {
+                                /* This row is already open - close it */
+                                this.src = "/static/images/details_open.png";
+                                /* fnClose doesn't do anything for server-side processing - do it ourselves :-) */
+                                var nRemove = $(nTr).next()[0];
+                                nRemove.parentNode.removeChild( nRemove );
+                            }
+                            else {
+                                /* Open this row */
+                                this.src = "/static/images/details_close.png";
+                                row=signatures.fnGetData(nTr);
+                                $.get('/signature_details',{'sidrev':row[3]},function(data) {
+                                    signatures.fnOpen( nTr, data, 'details' );
+                                });                            
+                            } 
+                        });
+                    } );
+                }
+                             
+                var categories=$("#categories").dataTable( {
+                	"sAjaxSource": '/categories',
+                	"bProcessing": true,
+                    "bPaginate": false,
+                    "bStateSave": true,
+                    "bAutoWidth": false,
+                    "bInfo": false,
+                    "bFilter": false,                    
+                    "bJQueryUI":true,
+                });
+                
+                var signatures=$("#signatures").dataTable( {
+                    "sAjaxSource": '/signatures?classtype=attempted-dos',
+                	"bProcessing": true,
+                    "bServerSide": false,
+
+                    "bPaginate": false,
+                    "bStateSave": true,
+                    "bAutoWidth": false,
+                    "bJQueryUI":true,
+                    "fnDrawCallback": fnOpenCloseDetails,
+
+                    "aoColumnDefs":[
+                        {"aTargets":[0],"bSortable":false},
+                    ]
+                })
+                
+                $("#categories tbody").click(function(event) {
+                    classtype=$(event.target.parentNode).find("td:first-child").text()
+                    if (classtype=="all") {
+                        signatures.fnReloadAjax("/signatures")
+                    }
+                    else {
+                        signatures.fnReloadAjax("/signatures?classtype=" + classtype )
+
+                    }
+                });
+			} );
+		</script>
+{% end %}
+{% block body %}
+        <div id="header">
+            <h1>Manage Snort Signatures</h1>
+        </div> 
+        <div id="content">
+            <table style="width:100%;">
+            <tr>
+                <td style="width:250px;vertical-align:top;">
+                    <table id="categories" class="display">
+                        <thead>
+                            <tr><th>Classtype</th>
+                            <th></th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                          
+                        </tbody>
+                    </table>        
+                </td>
+                
+                <td style="vertical-align:top;">
+                    <form>
+                        <table id="signatures" cellpadding="0" cellspacing="0" border="0" class="display">
+                            <thead>
+                                <tr>
+                                    <th width="10px">En.</th>
+                                    <th>Name</th>
+                                    <th>Refences</th>
+                                    <th width="70px">Sid.Rev</th>
+                                </tr>
+                            </thead>
+                            <tbody>            
+                                    <tr>
+                                        <td><img src="{{static_url("images/details_open.png")}}"><input type="checkbox" name="all" value="all"></td>
+                                        <td>MS-SQL Spike buffer overflow</td>
+                                        <td><a href="">url</a>, <a href="">cve</a></td>
+                                        <td>2292.5</td>
+                                    </tr>
+                                    <tr><td><img src="{{static_url("images/details_open.png")}}"><input type="checkbox" name="all" value="all"></td><td>Possible 3Com office connect rotuer</td><td><a href="">url</a>, <a href="">cve</a></td><td>434334.1</td></tr>
+                                    <tr><td><img  src="{{static_url("images/details_open.png")}}"><input type="checkbox" name="all" value="all"></td><td>IIS FTP Expoit (WinXp or 2000)</td><td><a href="">url</a>, <a href="">cve</a></td><td>34.35</td></tr>
+                                    <tr><td><img  src="{{static_url("images/details_open.png")}}"><input type="checkbox" name="all" value="all"></td><td>MS-SQL Spike buffer overflow</td><td><a href="">url</a>, <a href="">cve</a></td><td>2292.5</td></tr>
+                            </tbody>
+                        </table>
+                    </form> 
+                </td>
+            </tr>      
+            </table>
+        </div> 
+        <div id="footer"></div>
+{% end %}
