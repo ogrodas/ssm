@@ -1,189 +1,189 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""%prog [options] [args]
+"""
+    Parse snort signatures and outputs the parsed signatures as json
 
-DESCRIPTION
-
-    Parse snort signatures and update database
 EXAMPLES
-
-    TODO: Show some examples of how to use this script.
-
-EXIT STATUS
-
-    TODO: List exit codes
-
-AUTHOR
-
-    Ole Morten Grodas 
-
-
-VERSION
-    $Id$
+    python rulesparser.py --outfile rules.json --debug --logfile rules.log ../etpro_rules/rules/ ../nhc_ids_rules/rules/
 """
 
-import optparse
-import sys
-import os
-import re
+USAGE ="parser.py [--outfile <file>] [--logfile <file>] [[rule dir] [rule file]]+"
+
 import csv
+import re
+import sys
+import argparse
+import os
+import logging
+import json
 
-import psycopg2
-
-from collections import defaultdict
+from collections import defaultdict,OrderedDict
 from os.path import join as pjoin
 
-
-def parse_options():
-    parser =optparse.OptionParser(usage=globals()['__doc__'])
-    parser.add_option ('-D', '--sigdir', help='Parse Snort signatures in this directory')
-    parser.add_option ('-F', '--sigfile', help='Parse signature file')
-    return parser.parse_args()
-
-    
-def main():
-    (options, args) = parse_options()
-    if options.sigdir:
-        signature_files=(pjoin(options.sigdir,file) for file in os.listdir(options.sigdir) if file.endswith(".rules"))
-    elif options.sigfile:
-        signature_files=[options.sigfile]
-    else:
-        signature_files=[sys.stdin]
-        
-    signatures = parse_signatures(signature_files)
-    
-    updatedb(signatures)
-     
-
-def updatedb(signatures):
-    try:
-       conn=psycopg2.connect("dbname='ssm' user='ssm'") 
-    except:
-       print "I am unable to connect to the database, exiting."
-       sys.exit()
-       
-    try:
-        cursor=conn.cursor()
-        cursor.executemany("""\
-            INSERT INTO sigs (enabled,file,line,sid,rev,msg,classtype,action,proto,saddr,sport,dir,daddr,dport,options,reference) 
-            VALUES (%(enabled)s,%(file)s,%(lineno)s,%(sid)s,%(rev)s,%(msg)s,%(classtype)s,%(action)s,%(proto)s,%(saddr)s,%(sport)s,%(dir)s,%(daddr)s,%(dport)s,%(stripped_options)s,%(reference)s);"""
-        ,signatures)
-        conn.commit()
-    except psycopg2.DatabaseError:
-        conn.rollback()
-        raise
-        
-        
-class Comment(Exception):pass
-class EmptyLine(Comment):pass
 class ParsingError(Exception):pass
-class MissingSid(ParsingError):pass
-class MissingRev(ParsingError):pass   
-             
+
+def parse_options(argv):
+    parser = argparse.ArgumentParser(description=__doc__, usage=USAGE)
+    parser.add_argument ('sigfiles', default="",nargs="+",help="files or dirs for snort sigs")
+    parser.add_argument ('-O', '--outfile',default="")
+    parser.add_argument ('-L', '--logfile',default="")
+    parser.add_argument('--debug', action ='store_true',help = 'Outputs additional information to log.')
+
+    args=parser.parse_args(argv)
+
+    loglevel=logging.INFO
+    if args.debug:
+        loglevel=logging.DEBUG
+    if args.logfile!="":
+        logging.basicConfig(filename=args.logfile,level=loglevel,format='%(asctime)s %(levelname)s %(message)s')
+    else:
+        logging.basicConfig(level=loglevel,format='%(levelname)s %(message)s')
+    return args
+    
+def main(argv):
+    args =  parse_options(argv)
+    files=[]
+    for name in args.sigfiles:
+        if os.path.isdir(name):
+                for filename in os.listdir(name):
+                    if filename.endswith(".rules"):
+                        files.append(os.path.join(name,filename))
+        elif os.path.isfile(name):
+            files.append(name)
+
+    
+    sigs = parse_signatures(files)
+    if not args.outfile:
+        outfile=sys.stdout
+    else:
+        outfile=open(args.outfile,"w+")
+    json.dump(sigs,outfile,indent=4)
+    
+    
 def parse_signatures(files):
-    """
-    """
-    for file in files:
-        signature=""
-        lineno=0
-        for line in open(file):
-            lineno+=1
-            if line.endswith("\\"):
-                signature+=line[:-1] + " "
-            else:
-                signature+=line
-                try:
-                    parsed_signature=Signature(signature,file,lineno)
-                    yield parsed_signature
-                except EmptyLine,e:
-                    pass
-                except Comment,e:
-                    pass
-                except ParsingError,e:
-                    sys.stderr.write("ParsingError: %s " % str(e))
-                    raise
-                signature=""
-        
+    sigs=[]
+    for rulefile in files:
+        logging.debug("%s: Start parsing" % (rulefile)) 
+        comment=""
+        with open(rulefile) as fp:
+            linenum=0
+            errornum=0
+            signum=0
+            for line in fp:
+                linenum+=1
+                if re.match("^\s*#?\s*?alert",line):
+                    try:
+                        sig=parse_signature(line.strip(),comment.strip(),rulefile,linenum)
+                        signum+=1
+                        sigs.append(sig)
+                    except ParsingError,e:
+                        errornum+=1
+                        logging.error("%s:%d %s" % (rulefile,linenum,str(e)))
+                    except Exception,e:
+                        errornum+=1
+                        logging.exception("%s:%d Error while parsing" % (rulefile,linenum))
+                elif re.match("^\s*#",line): #Append comments
+                    stripped=line.split("#",2)[1]
+                    if stripped.strip():
+                        comment+=stripped
+                elif not line.strip(): #Remove comment if empty line
+                    comment=""
+                else:
+                    logging.warning(line)
+            
+            logging.debug("%s: Finished Parsing %d Signatures, %d Errors, %d lines" % (rulefile,signum,errornum,linenum))
+    return sigs
 
-class Signature(object):
-    """A python represenation of a snort signature"""
+def parse_signature(rule,comment,filename,linenum):
+    sig=OrderedDict()
+    sig["comment"]=comment
+    sig["filename"]=os.path.basename(filename)
+    sig["linenum"]=linenum
+    sig["sigtype"]="snort"
 
-    opt_regexp=re.compile("""(?P<key>\S*?)(?::\s?(?P<value>[^"]*?|"[^"\\\r\n]*(?:\\.[^"\\\r\n]*)*"))?\s?;""")
     iscomment_regexp=re.compile("""^\s*#""")
-
-    def __init__(self,text,filename,lineno):
-        self.file=os.path.basename(filename)
-        self.lineno=lineno
-        text=text.strip()
-        if not text:
-            raise EmptyLine()
-            
-        if self.iscomment_regexp.match(text):
-            self.enabled=False
-            self.rawsignature=text.split('#',1)[1]
-        else:
-            self.enabled=True
-            self.rawsignature=text
-            
-        try:
-            #Extract signature header
-            try:
-                self.action,self.proto,self.saddr,self.sport,self.dir,self.daddr,self.dport,options=self.rawsignature.split(' ',7)
-                self.options=options.split('(',1)[1].rsplit(')',1)[0] # Remove () from options
-            except (ValueError,IndexError),e:
-                raise ParsingError(self.rawsignature)
-
-            if self.dir not in ["->","<-","<>"]:
-                raise ParsingError(self.rawsignature)
-            
-            
-            #Extract signature options
-            self.optionsdict=defaultdict(list)
-            self.stripped_options=""
-            parsed_options=self.opt_regexp.findall(self.options)
-            for key,value in parsed_options:
-                self.optionsdict[key].append(value)
-                if key not in ["msg","reference","rev","sid","classtype"]:
-                    if value:
-                        self.stripped_options+= "%s:%s; " %(key,value)
-                    else:            
-                        self.stripped_options+="%s; " % (key)
-            
-            #Setting default for some options that is expected in every sig, but is still missing in some 
-            if "msg" not in self.optionsdict: self.optionsdict["msg"]=["Missing"]
-            if "classtype" not in self.optionsdict: self.optionsdict["classtype"]=["Missing"]
-            if "reference" not in self.optionsdict: self.optionsdict["reference"]=[""]
-
-            try:int(self.sid)
-            except TypeError,e: raise MissingSid(signature)
-
-            try: int(self.rev)
-            except TypeError,e: raise MissingRev(signature)
-        except ParsingError,e:
-            if self.enabled:
-                raise
-            else:
-                raise Comment(text)
+    if iscomment_regexp.match(rule):
+        sig["enabled"]=False
+        sig["sig"]=rule.split('#',1)[1].strip()
+    else:
+        sig["enabled"]=True
+        sig["sig"]=rule
+    
+    try:
+        sig["action"],sig["proto"],sig["src_ip"],sig["src_port"],sig["dir"],sig["dest_ip"],sig["dest_port"],options=sig["sig"].split(' ',7)
+        options=options.split('(',1)[1].rsplit(')',1)[0] # Remove () from options
+    except (ValueError,IndexError),e:
+        raise ParsingError("Error rule parsing header")
      
-    def __getattr__(self,name):
-        if name not in self.optionsdict:
-            raise AttributeError(name) 
-        value=self.optionsdict[name]
-        if len(value)==1:
-            return value[0]
+    if sig["dir"] not in ["->","<-","<>","any"]:
+        raise ParsingError('Rule dir is "%s" should be  "->","<-" or "<>"' % (sig["dir"]))
+
+    #Extract signature options
+    optionsdict=OrderedDict()
+    stripped_options=""
+    opt_regexp=re.compile("""(?P<key>\S*?)(?::\s?(?P<value>[^"]*?|"[^"\\\r\n]*(?:\\.[^"\\\r\n]*)*"))?\s?;""")
+    parsed_options=opt_regexp.findall(options)
+    for key,value in parsed_options:
+        #if multiple keys, create a list of values
+        if key not in optionsdict:
+            optionsdict[key]=value
+        elif not isinstance(optionsdict[key],list):
+            optionsdict[key]=[optionsdict[key],value]
         else:
-            return value
-            
-    def __getitem__(self,name):
-        try:
-            return self.__dict__[name]
-        except:
-            return self.__getattr__(name)
-        
+            optionsdict[key].append(value)
+
+        #Create a stripped_options field that only includes functional options. Easier to read an understand what the sig does. 
+        if key not in ["msg","reference","rev","sid","classtype","metadata"]:
+            if value:
+                stripped_options+= "%s:%s; " %(key,value)
+            else:
+                stripped_options+="%s; " % (key)
+    sig["stripped_options"]=stripped_options
+
+
+    #Add all non functional fields to the sig dictionary
+    for key in ["reference","rev","sid","classtype"]:
+        if key in optionsdict:
+            opt=optionsdict[key]
+            if isinstance(opt,list):
+                sig[key]=[re.findall("^[\"']?(.*?)[\"']?$",el)[0] for el in opt] 
+            else:
+                sig[key]=re.findall("^[\"']?(.*?)[\"']?$",opt)[0] # Remove starting and ending "
+
+
+    #Parse metadata
+    if "metadata" in optionsdict:
+        for key_value in optionsdict["metadata"].split(","):
+            if ' ' in key_value:
+                key,value=key_value.split(' ',1)
+                sig["m."+ key]=value
+            else:
+                sig["m." +key_value]=""
+
+    #Signature Validation
+    if "msg" not in optionsdict: 
+        logging.warning("%s:%d Signature missing msg" % (filename,linenum))
+    if "classtype" not in optionsdict: 
+        logging.info("%s:%d Signature missing classtype" % (filename,linenum))
+    if "reference" not in optionsdict: 
+        logging.info("%s:%d  missing reference" % (filename,linenum))
+    if "sid" not in optionsdict:
+        logging.warning("%s:%d Signature missing sid" % (filename,linenum))
+    else:
+        try:int(optionsdict["sid"])
+        except TypeError,e: 
+            logging.warning("%s:%d sid not and int" % (filename,linenum))
+    if "rev" not in optionsdict:
+        logging.warning("%s:%d Signature missing rev" % (filename,linenum))
+    else:
+        try:int(optionsdict["rev"])
+        except TypeError,e: 
+            logging.warning("%s:%d rev not and int" % (filename,linenum))
+    return sig
 
 if __name__=="__main__":
     try:
-        sys.exit(main())
+        sys.exit(main(sys.argv[1:]))
     except KeyboardInterrupt,e:
         sys.stderr.write("User presdd Ctrl+C. Exiting..\n")
