@@ -32,3 +32,7 @@ EXAMPLE OUTPUT:
     },
 ...
 ]
+
+WEB
+The old web code is not updated to work with the new json output. A new import tool needs to be written. preferably for a json database like RethinkDB or elasticsearch
+Screenshots form the old web http://grodaas.wordpress.com/2010/08/30/managing-snort-signatures/
